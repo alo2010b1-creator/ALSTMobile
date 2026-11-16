@@ -27,31 +27,19 @@ class ScreenCaptureManager(
     private var lastProcessTime = 0L
     private var screenWidth = 0
     private var screenHeight = 0
+    private var screenDensity = 0
 
-    @SuppressLint("WrongConstant")
-    fun startCapture(resultCode: Int, data: Intent) {
-        if (isCapturing) return
-
-        val projectionManager = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        mediaProjection = projectionManager.getMediaProjection(resultCode, data)
-        
-        mediaProjection?.registerCallback(object : MediaProjection.Callback() {
-            override fun onStop() {
-                super.onStop()
-                stopCapture()
-                onCaptureStopped()
-            }
-        }, null)
-
+    private fun readDisplayMetrics(): DisplayMetrics {
         val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val metrics = DisplayMetrics()
+        @Suppress("DEPRECATION")
         windowManager.defaultDisplay.getRealMetrics(metrics)
+        return metrics
+    }
 
-        screenWidth = metrics.widthPixels
-        screenHeight = metrics.heightPixels
-        val screenDensity = metrics.densityDpi
-
-        imageReader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2).apply {
+    @SuppressLint("WrongConstant")
+    private fun createImageReader(width: Int, height: Int): ImageReader {
+        return ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2).apply {
             setOnImageAvailableListener({ reader ->
                 val image = reader.acquireLatestImage()
                 if (image != null) {
@@ -66,7 +54,8 @@ class ScreenCaptureManager(
                             val rowPadding = rowStride - pixelStride * screenWidth
 
                             val requiredWidth = screenWidth + rowPadding / pixelStride
-                            if (reusableBitmap == null || reusableBitmap!!.width != requiredWidth) {
+                            val bmp = reusableBitmap
+                            if (bmp == null || bmp.width != requiredWidth || bmp.height != screenHeight) {
                                 reusableBitmap = Bitmap.createBitmap(
                                     requiredWidth,
                                     screenHeight,
@@ -83,6 +72,28 @@ class ScreenCaptureManager(
                 }
             }, null)
         }
+    }
+
+    fun startCapture(resultCode: Int, data: Intent) {
+        if (isCapturing) return
+
+        val projectionManager = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        mediaProjection = projectionManager.getMediaProjection(resultCode, data)
+
+        mediaProjection?.registerCallback(object : MediaProjection.Callback() {
+            override fun onStop() {
+                super.onStop()
+                stopCapture()
+                onCaptureStopped()
+            }
+        }, null)
+
+        val metrics = readDisplayMetrics()
+        screenWidth = metrics.widthPixels
+        screenHeight = metrics.heightPixels
+        screenDensity = metrics.densityDpi
+
+        imageReader = createImageReader(screenWidth, screenHeight)
 
         virtualDisplay = mediaProjection?.createVirtualDisplay(
             "ALST_ScreenCapture",
@@ -96,6 +107,37 @@ class ScreenCaptureManager(
         )
 
         isCapturing = true
+    }
+
+    /**
+     * Call when the screen rotates: re-read the size and resize the existing virtual display.
+     * The same MediaProjection is reused, so no new permission prompt is needed.
+     */
+    fun updateDisplaySize() {
+        if (!isCapturing) return
+        val display = virtualDisplay ?: return
+
+        val metrics = readDisplayMetrics()
+        if (metrics.widthPixels == screenWidth && metrics.heightPixels == screenHeight) return
+
+        screenWidth = metrics.widthPixels
+        screenHeight = metrics.heightPixels
+        screenDensity = metrics.densityDpi
+
+        try {
+            val oldReader = imageReader
+            val newReader = createImageReader(screenWidth, screenHeight)
+            imageReader = newReader
+
+            display.resize(screenWidth, screenHeight, screenDensity)
+            display.surface = newReader.surface
+
+            oldReader?.close()
+            // Old bitmap has the wrong size now
+            reusableBitmap = null
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
     }
 
     fun getLatestScreenshot(): Bitmap? {
