@@ -7,6 +7,7 @@ import android.provider.Settings
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
 import com.alst.mobile.MainActivity
+import com.alst.mobile.core.capture.CapturePermissionActivity
 import com.alst.mobile.data.preferences.AppPreferencesRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -49,22 +50,31 @@ class QSTranslateTileService : TileService() {
                 // User wants to turn ON
                 if (Settings.canDrawOverlays(this@QSTranslateTileService)) {
                     prefsRepository.setServiceEnabled(true)
-                    val initIntent = Intent(this@QSTranslateTileService, ScreenTranslatorService::class.java).apply {
-                        action = ScreenTranslatorService.ACTION_INIT
+
+                    // Open the permission screen first; the service starts only after the user grants capture
+                    val permIntent = Intent(this@QSTranslateTileService, CapturePermissionActivity::class.java).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     }
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        startForegroundService(initIntent)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                        val pendingIntent = PendingIntent.getActivity(
+                            this@QSTranslateTileService,
+                            1,
+                            permIntent,
+                            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                        )
+                        startActivityAndCollapse(pendingIntent)
                     } else {
-                        startService(initIntent)
+                        @Suppress("DEPRECATION")
+                        startActivityAndCollapse(permIntent)
                     }
                 } else {
                     // Needs permission, redirect to app
                     prefsRepository.setServiceEnabled(false)
-                    
+
                     val intent = Intent(this@QSTranslateTileService, MainActivity::class.java).apply {
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
                     }
-                    
+
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                         val pendingIntent = PendingIntent.getActivity(
                             this@QSTranslateTileService,
