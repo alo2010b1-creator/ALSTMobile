@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -44,6 +45,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.painterResource
@@ -54,7 +56,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.alst.mobile.R
 import com.alst.mobile.domain.model.TranslationBlock
-import com.alst.mobile.ui.theme.OverlayColors
 import kotlin.math.roundToInt
 
 class OverlayManager(
@@ -62,17 +63,18 @@ class OverlayManager(
     private val onTranslateClicked: () -> Unit
 ) {
     private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-    
+
     // Get actual screen density for px->dp conversion
     private val screenDensity: Float by lazy {
         val metrics = DisplayMetrics()
+        @Suppress("DEPRECATION")
         windowManager.defaultDisplay.getRealMetrics(metrics)
         metrics.density
     }
-    
+
     private var fabView: ComposeView? = null
     private var overlayView: ComposeView? = null
-    
+
     private var fabLifecycleOwner: ComposeOverlayLifecycleOwner? = null
     private var overlayContainer: android.widget.FrameLayout? = null
     private var overlayLifecycleOwner: ComposeOverlayLifecycleOwner? = null
@@ -82,6 +84,10 @@ class OverlayManager(
 
     private var translationBlocks by mutableStateOf<List<TranslationBlock>>(emptyList())
     var isProcessing by mutableStateOf(false)
+
+    // true = one dialog box at the bottom (visual novel style), false = text drawn over the original
+    private val overlayPrefs = context.getSharedPreferences("alst_overlay", Context.MODE_PRIVATE)
+    private var dialogMode by mutableStateOf(overlayPrefs.getBoolean(KEY_DIALOG_MODE, true))
 
     private val systemDialogsReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -104,7 +110,12 @@ class OverlayManager(
     }
 
     fun isOverlayShowing(): Boolean = overlayContainer != null
-    
+
+    /** Call when the screen rotates: the block coordinates belong to the old screenshot, so close the overlay. */
+    fun onScreenRotated() {
+        hideTranslationOverlay()
+    }
+
     /** Convert raw pixel value from VirtualDisplay/MLKit to Compose Dp */
     private fun Int.pxToDp(): Dp = (this / screenDensity).dp
 
@@ -159,7 +170,7 @@ class OverlayManager(
                     return super.dispatchKeyEvent(event)
                 }
             }
-            
+
             // Calculate exact physical location of the window on the screen
             // to offset any system insets, notch push-downs, or status bar gaps.
             overlayContainer!!.viewTreeObserver.addOnGlobalLayoutListener {
@@ -171,16 +182,20 @@ class OverlayManager(
 
             overlayView = ComposeView(context).apply {
                 setContent {
-                    TranslationOverlayContent(
-                        blocks = translationBlocks,
-                        winOffsetX = windowOffsetX,
-                        winOffsetY = windowOffsetY
-                    )
+                    if (dialogMode) {
+                        DialogOverlayContent(blocks = translationBlocks)
+                    } else {
+                        TranslationOverlayContent(
+                            blocks = translationBlocks,
+                            winOffsetX = windowOffsetX,
+                            winOffsetY = windowOffsetY
+                        )
+                    }
                 }
             }
-            
+
             overlayContainer!!.addView(overlayView)
-            
+
             overlayLifecycleOwner = ComposeOverlayLifecycleOwner().apply { attachToView(overlayContainer!!) }
 
             val params = WindowManager.LayoutParams(
@@ -200,7 +215,7 @@ class OverlayManager(
 
             windowManager.addView(overlayContainer, params)
         }
-        
+
         // Reset 30-second timeout
         mainHandler.removeCallbacks(timeoutRunnable)
         mainHandler.postDelayed(timeoutRunnable, 30_000)
@@ -239,7 +254,7 @@ class OverlayManager(
                     }
                     .pointerInput(Unit) {
                         detectTapGestures(
-                            onTap = { 
+                            onTap = {
                                 if (showCloseOptions) {
                                     showCloseOptions = false
                                 } else {
@@ -272,27 +287,50 @@ class OverlayManager(
                 enter = androidx.compose.animation.fadeIn(),
                 exit = androidx.compose.animation.fadeOut()
             ) {
-                Box(
-                    modifier = Modifier
-                        .padding(start = 4.dp)
-                        .size(34.dp)
-                        .clip(CircleShape)
-                        .background(Color(0xEEFF3B30)) // Sleek red glass
-                        .border(1.dp, Color(0x44FFFFFF), CircleShape)
-                        .clickable {
-                            val intent = Intent(context, com.alst.mobile.service.ScreenTranslatorService::class.java).apply {
-                                action = com.alst.mobile.service.ScreenTranslatorService.ACTION_STOP_SERVICE
-                            }
-                            context.startService(intent)
-                        },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Close,
-                        contentDescription = "Close",
-                        tint = Color.White,
-                        modifier = Modifier.size(18.dp)
-                    )
+                androidx.compose.foundation.layout.Row(verticalAlignment = Alignment.CenterVertically) {
+                    // Mode switch: shows the current mode (BOX = dialog box, TXT = text over original)
+                    Box(
+                        modifier = Modifier
+                            .padding(start = 4.dp)
+                            .size(34.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xEE3A7BFF))
+                            .border(1.dp, Color(0x44FFFFFF), CircleShape)
+                            .clickable {
+                                dialogMode = !dialogMode
+                                overlayPrefs.edit().putBoolean(KEY_DIALOG_MODE, dialogMode).apply()
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = if (dialogMode) "BOX" else "TXT",
+                            color = Color.White,
+                            fontSize = 10.sp
+                        )
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .padding(start = 4.dp)
+                            .size(34.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xEEFF3B30)) // Sleek red glass
+                            .border(1.dp, Color(0x44FFFFFF), CircleShape)
+                            .clickable {
+                                val intent = Intent(context, com.alst.mobile.service.ScreenTranslatorService::class.java).apply {
+                                    action = com.alst.mobile.service.ScreenTranslatorService.ACTION_STOP_SERVICE
+                                }
+                                context.startService(intent)
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Close",
+                            tint = Color.White,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                 }
             }
         }
@@ -304,6 +342,50 @@ class OverlayManager(
             params.x += dx.roundToInt()
             params.y += dy.roundToInt()
             windowManager.updateViewLayout(view, params)
+        }
+    }
+
+    /** Visual novel style: all translated text in one dialog box at the bottom of the screen. */
+    @Composable
+    private fun DialogOverlayContent(blocks: List<TranslationBlock>) {
+        val fullText = blocks
+            .map { it.translatedText.trim() }
+            .filter { it.isNotEmpty() }
+            .joinToString("\n")
+
+        // Limit the box to 40% of the screen height; longer text scrolls
+        val maxBoxHeight = (LocalConfiguration.current.screenHeightDp * 0.4f).dp
+        val shape = RoundedCornerShape(14.dp)
+
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) {
+                    detectTapGestures(onTap = { hideTranslationOverlay() })
+                }
+        ) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp)
+                    .padding(bottom = 48.dp)
+                    .heightIn(max = maxBoxHeight)
+                    .clip(shape)
+                    .background(Color(0xE6101018))
+                    .border(1.dp, Color(0x33FFFFFF), shape)
+                    .verticalScroll(rememberScrollState())
+                    .padding(16.dp)
+            ) {
+                Text(
+                    text = fullText,
+                    color = Color.White,
+                    fontSize = 16.sp,
+                    lineHeight = 24.sp,
+                    textAlign = TextAlign.Start,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
         }
     }
 
@@ -331,7 +413,7 @@ class OverlayManager(
                     val yDp = with(LocalDensity.current) { (rect.top - winOffsetY).toDp() }
                     val widthDp = with(LocalDensity.current) { rect.width().toDp() }
                     val minHeightDp = with(LocalDensity.current) { rect.height().toDp() }
-                    
+
                     // Dynamically calculate font size from pixel line height using the real density
                     // We multiply by 0.65f because a font's line-height is typically larger than its SP value
                     // e.g., if a line takes 50px, the actual text height is around 32px
@@ -367,12 +449,16 @@ class OverlayManager(
             }
         }
     }
-    
+
     fun cleanup() {
         hideFab()
         hideTranslationOverlay()
         try {
             context.unregisterReceiver(systemDialogsReceiver)
         } catch (e: Exception) {}
+    }
+
+    companion object {
+        private const val KEY_DIALOG_MODE = "dialog_mode"
     }
 }
