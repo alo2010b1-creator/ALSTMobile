@@ -5,6 +5,7 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.os.Build
 import android.os.IBinder
@@ -16,7 +17,6 @@ import com.alst.mobile.core.capture.CapturePermissionActivity
 import com.alst.mobile.core.capture.ScreenCaptureManager
 import com.alst.mobile.core.ocr.TextRecognitionManager
 import com.alst.mobile.core.overlay.OverlayManager
-import com.alst.mobile.core.translator.TranslationEngineFactory
 import com.alst.mobile.data.preferences.AppPreferencesRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -33,8 +33,6 @@ class ScreenTranslatorService : Service() {
     private lateinit var overlayManager: OverlayManager
     private lateinit var prefsRepository: AppPreferencesRepository
 
-    private var isProcessing = false
-
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
@@ -44,42 +42,58 @@ class ScreenTranslatorService : Service() {
         }
         ocrManager = TextRecognitionManager()
         prefsRepository = AppPreferencesRepository(this)
-        
+
         overlayManager = OverlayManager(
             context = this,
             onTranslateClicked = { triggerTranslation() }
         )
-        
+
         // Show FAB when service is created
         overlayManager.showFab()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForegroundServiceWithNotification()
+        val action = intent?.action
 
-        when (intent?.action) {
-            ACTION_INIT -> {
-                val permIntent = Intent(this, CapturePermissionActivity::class.java).apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                }
-                startActivity(permIntent)
+        // Stopping does not need a foreground notification
+        if (action == ACTION_STOP_SERVICE) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        // Legacy entry point: just open the permission screen, no foreground service yet
+        if (action == ACTION_INIT) {
+            val permIntent = Intent(this, CapturePermissionActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
-            ACTION_START_CAPTURE -> {
-                val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0)
-                val resultData = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    intent.getParcelableExtra(EXTRA_RESULT_DATA, Intent::class.java)
-                } else {
-                    @Suppress("DEPRECATION")
-                    intent.getParcelableExtra(EXTRA_RESULT_DATA)
-                }
-                
-                if (resultData != null) {
-                    captureManager.startCapture(resultCode, resultData)
-                } else {
-                    stopSelf()
-                }
+            startActivity(permIntent)
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        // Android may refuse to start a foreground service from the background
+        if (!startForegroundServiceWithNotification()) {
+            Toast.makeText(
+                this,
+                "Cannot start in background. Please open the app and try again.",
+                Toast.LENGTH_LONG
+            ).show()
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        if (action == ACTION_START_CAPTURE && intent != null) {
+            val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0)
+            val resultData = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                intent.getParcelableExtra(EXTRA_RESULT_DATA, Intent::class.java)
+            } else {
+                @Suppress("DEPRECATION")
+                intent.getParcelableExtra(EXTRA_RESULT_DATA)
             }
-            ACTION_STOP_SERVICE -> {
+
+            if (resultData != null) {
+                captureManager.startCapture(resultCode, resultData)
+            } else {
                 stopSelf()
             }
         }
@@ -89,7 +103,7 @@ class ScreenTranslatorService : Service() {
 
     private fun triggerTranslation() {
         if (overlayManager.isProcessing) return
-        
+
         // If overlay is already showing, just hide it and do nothing else
         if (overlayManager.isOverlayShowing()) {
             overlayManager.hideTranslationOverlay()
@@ -97,7 +111,7 @@ class ScreenTranslatorService : Service() {
         }
 
         overlayManager.isProcessing = true
-        
+
         val bitmap = captureManager.getLatestScreenshot()
         if (bitmap != null) {
             serviceScope.launch {
@@ -175,7 +189,7 @@ class ScreenTranslatorService : Service() {
         }
     }
 
-    private fun startForegroundServiceWithNotification() {
+    private fun startForegroundServiceWithNotification(): Boolean {
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.app_name))
             .setContentText("Screen translation service is active")
@@ -183,16 +197,29 @@ class ScreenTranslatorService : Service() {
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
 
-        ServiceCompat.startForeground(
-            this,
-            NOTIFICATION_ID,
-            notification,
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
-            } else {
-                0
-            }
-        )
+        return try {
+            ServiceCompat.startForeground(
+                this,
+                NOTIFICATION_ID,
+                notification,
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                } else {
+                    0
+                }
+            )
+            true
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
+        }
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // Screen rotated: resize the capture and close the stale overlay
+        captureManager.updateDisplaySize()
+        overlayManager.onScreenRotated()
     }
 
     override fun onDestroy() {
