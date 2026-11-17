@@ -406,3 +406,179 @@ fun DashboardScreen(
                                 Button(
                                     onClick = {
            
+                                        focusManager.clearFocus()
+                                        Toast.makeText(context, "API Key saved securely", Toast.LENGTH_SHORT).show()
+                                    },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = Color(0xFF00B0FF),
+                                        contentColor = Color.White
+                                    ),
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Save,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Text("Save", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // -- Target Language Section --
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = stringResource(R.string.target_language_label),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF00E5FF),
+                        letterSpacing = 0.5.sp
+                    )
+                    LanguageDropdown(
+                        selectedLanguageCode = state.targetLanguage,
+                        downloadedLanguages = state.downloadedLanguages,
+                        isOnlineMode = state.engineType == EngineType.ONLINE_GEMINI,
+                        onLanguageSelected = { viewModel.setTargetLanguage(it) },
+                    )
+                }
+
+                // -- Manage Offline Models Button (Visible only in Offline Mode) --
+                AnimatedVisibility(
+                    visible = state.engineType == EngineType.OFFLINE,
+                    enter = fadeIn(),
+                    exit = fadeOut()
+                ) {
+                    GlassCard(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { viewModel.toggleLanguageManager(true) },
+                        shape = RoundedCornerShape(18.dp),
+                        backgroundColor = Color(0x12FFFFFF),
+                        borderColor = Color(0x25FFFFFF)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0x2200E5FF)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Add,
+                                    contentDescription = null,
+                                    tint = Color(0xFF00E5FF),
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = stringResource(R.string.ocr_models_title),
+                                    color = Color.White,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    text = "Download & manage offline language packages",
+                                    color = Color(0x88FFFFFF),
+                                    fontSize = 11.sp
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // -- Overlay Permission Card --
+                GlassCard(
+                    shape = RoundedCornerShape(20.dp),
+                    backgroundColor = if (state.hasOverlayPermission) Color(0x1800E676) else Color(0x18FF5252),
+                    borderColor = if (state.hasOverlayPermission) Color(0x4500E676) else Color(0x40FF5252),
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    ) {
+                        Icon(
+                            imageVector = if (state.hasOverlayPermission)
+                                Icons.Default.CheckCircle
+                            else
+                                Icons.Default.Warning,
+                            contentDescription = null,
+                            tint = if (state.hasOverlayPermission)
+                                Color(0xFF00E676)
+                            else
+                                Color(0xFFFF5252),
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = stringResource(R.string.overlay_permission_title),
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                            Text(
+                                text = if (state.hasOverlayPermission)
+                                    stringResource(R.string.permission_granted)
+                                else
+                                    stringResource(R.string.overlay_permission_desc),
+                                fontSize = 11.sp,
+                                color = Color(0xAAFFFFFF)
+                            )
+                        }
+                        if (!state.hasOverlayPermission) {
+                            Button(
+                                onClick = {
+                                    val intent = Intent(
+                                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                        Uri.parse("package:${context.packageName}"),
+                                    )
+                                    context.startActivity(intent)
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFFFF5252),
+                                    contentColor = Color.White
+                                ),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text(
+                                    stringResource(R.string.grant_permission),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+            }
+
+            if (state.showLanguageManager) {
+                LanguageModelListSheet(
+                    allModels = state.allLanguageModels,
+                    onDownload = { viewModel.downloadLanguageModel(it) },
+                    onDelete = { viewModel.deleteLanguageModel(it) },
+                    onRefresh = { viewModel.refreshModels() },
+                    onDismiss = { viewModel.toggleLanguageManager(false) },
+                )
+            }
+        }
+    }
+}
